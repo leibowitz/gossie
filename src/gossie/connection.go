@@ -237,7 +237,7 @@ func (cp *connectionPool) runWithRetries(t transaction, retries int) error {
 			c, err = cp.acquire()
 			// nothing to do, cannot acquire a connection
 			if err != nil {
-				return err
+				continue
 			}
 		}
 
@@ -313,6 +313,7 @@ func (cp *connectionPool) acquire() (*connection, error) {
 			return nil, err
 		}
 		if err != nil {
+			cp.blacklist(node)
 			cp.releaseEmpty()
 			return nil, err
 		}
