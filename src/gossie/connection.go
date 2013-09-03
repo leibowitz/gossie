@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/hailocab/gossie/src/cassandra"
-	"github.com/pomack/thrift4go/lib/go/src/thrift"
+	"github.com/domwong/thrift4go/lib/go/src/thrift"
 	"math/rand"
 	"net"
 	"strconv"
@@ -218,7 +218,10 @@ func (e transactionError) Error() string {
 	if e.te != nil {
 		return "Thrift RPC timeout was exceeded"
 	}
-	return e.err.Error()
+	if e.err != nil {
+		return e.err.Error()
+	}
+	return "No Error"
 }
 
 type transaction func(*connection) *transactionError
@@ -235,14 +238,21 @@ func (cp *connectionPool) runWithRetries(t transaction, retries int) error {
 		// acquire a new connection if we are just starting out or after discarding one
 		if c == nil {
 			c, err = cp.acquire()
-			// nothing to do, cannot acquire a connection
 			if err != nil {
-				return err
+				// cannot acquire a connection, retryable
+				continue
 			}
 		}
 
 		terr := t(c)
 		// nonrecoverable error, but not related to availability, do not retry and pass it to the user
+		if strings.HasSuffix(terr.Error(), "timeout") {
+			// ETF-129 hack
+			cp.blacklist(c.node)
+			c.close()
+			c = nil
+			continue
+		}
 		if terr.ire != nil || terr.err != nil {
 			cp.release(c)
 			return terr
@@ -265,9 +275,12 @@ func (cp *connectionPool) runWithRetries(t transaction, retries int) error {
 		cp.release(c)
 		return nil
 	}
+	if err == nil {
+		// loop exited normally so it hit the retry limit
+		err = ErrorMaxRetriesReached
+	}
 
-	// loop exited normally so it hit the retry limit
-	return ErrorMaxRetriesReached
+	return err
 }
 
 func (cp *connectionPool) randomNode(now int) (string, error) {
