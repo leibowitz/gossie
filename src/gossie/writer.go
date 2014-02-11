@@ -2,7 +2,6 @@ package gossie
 
 import (
 	"github.com/hailocab/gossie/src/cassandra"
-	"github.com/hailocab/thrift4go/lib/go/src/thrift"
 	"time"
 )
 
@@ -40,7 +39,7 @@ type Writer interface {
 type writer struct {
 	pool             *connectionPool
 	consistencyLevel int
-	writers          thrift.TMap
+	writers          map[string]map[string][]*cassandra.Mutation
 	usedCounters     bool
 }
 
@@ -48,7 +47,7 @@ func newWriter(cp *connectionPool, cl int) *writer {
 	return &writer{
 		pool:             cp,
 		consistencyLevel: cl,
-		writers:          thrift.NewTMap(thrift.BINARY, thrift.MAP, 1),
+		writers:          make(map[string]map[string][]*cassandra.Mutation),
 	}
 }
 
@@ -58,23 +57,22 @@ func now() int64 {
 
 func (w *writer) addWriter(cf string, key []byte) *cassandra.Mutation {
 	tm := cassandra.NewMutation()
-	var cfMuts thrift.TMap
-	im, exists := w.writers.Get(key)
+	var cfMuts map[string][]*cassandra.Mutation
+	im, exists := w.writers[string(key)]
 	if !exists {
-		cfMuts = thrift.NewTMap(thrift.STRING, thrift.LIST, 1)
-		w.writers.Set(key, cfMuts)
+		w.writers[string(key)] = make(map[string][]*cassandra.Mutation)
 	} else {
-		cfMuts = im.(thrift.TMap)
+		cfMuts = im
 	}
-	var mutList thrift.TList
-	im, exists = cfMuts.Get(cf)
+	var mutList []*cassandra.Mutation
+	cfm, exists := cfMuts[cf]
 	if !exists {
-		mutList = thrift.NewTList(thrift.STRUCT, 1)
-		cfMuts.Set(cf, mutList)
+		mutList = make([]*cassandra.Mutation, 0)
+		cfMuts[cf] = mutList
 	} else {
-		mutList = im.(thrift.TList)
+		mutList = cfm
 	}
-	mutList.Push(tm)
+	mutList = append(mutList, tm)
 	return tm
 }
 
@@ -93,16 +91,17 @@ func (w *writer) InsertTtl(cf string, row *Row, ttl int) Writer {
 		tm := w.addWriter(cf, row.Key)
 		c := cassandra.NewColumn()
 		c.Name = col.Name
-		c.Value = col.Value
+		c.Value = &col.Value
 		if ttl > 0 {
-			c.Ttl = int32(ttl)
+			ttlTmp := int32(ttl)
+			c.Ttl = &ttlTmp
 		} else {
-			c.Ttl = col.Ttl
+			c.Ttl = &col.Ttl
 		}
 		if col.Timestamp > 0 {
-			c.Timestamp = col.Timestamp
+			c.Timestamp = &col.Timestamp
 		} else {
-			c.Timestamp = t
+			c.Timestamp = &t
 		}
 		cs := cassandra.NewColumnOrSuperColumn()
 		cs.Column = c
@@ -128,7 +127,8 @@ func (w *writer) DeltaCounters(cf string, row *Row) Writer {
 func (w *writer) Delete(cf string, key []byte) Writer {
 	tm := w.addWriter(cf, key)
 	d := cassandra.NewDeletion()
-	d.Timestamp = now()
+	ts := now()
+	d.Timestamp = &ts
 	tm.Deletion = d
 	return w
 }
@@ -136,12 +136,14 @@ func (w *writer) Delete(cf string, key []byte) Writer {
 func (w *writer) DeleteColumns(cf string, key []byte, columns [][]byte) Writer {
 	tm := w.addWriter(cf, key)
 	d := cassandra.NewDeletion()
-	d.Timestamp = now()
+	ts := now()
+	d.Timestamp = &ts
 	sp := cassandra.NewSlicePredicate()
-	sp.ColumnNames = thrift.NewTList(thrift.BINARY, 1)
-	for _, name := range columns {
-		sp.ColumnNames.Push(name)
+	colNamesArr := make([][]byte, len(columns))
+	for i, name := range columns {
+		colNamesArr[i] = name
 	}
+	sp.ColumnNames = &colNamesArr
 	d.Predicate = sp
 	tm.Deletion = d
 	return w
@@ -162,9 +164,9 @@ func (w *writer) DeleteSlice(cf string, key []byte, slice *Slice) Writer {
 
 func (w *writer) Run() error {
 	toRun := func(c *connection) *transactionError {
-		ire, ue, te, err := c.client.BatchMutate(
+		err := c.client.BatchMutate(
 			w.writers, cassandra.ConsistencyLevel(w.consistencyLevel))
-		return &transactionError{ire, ue, te, err}
+		return &transactionError{err}
 	}
 	if w.usedCounters {
 		return w.pool.runWithRetries(toRun, 1)

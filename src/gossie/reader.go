@@ -3,7 +3,6 @@ package gossie
 import (
 	"errors"
 	"github.com/hailocab/gossie/src/cassandra"
-	"github.com/hailocab/thrift4go/lib/go/src/thrift"
 )
 
 /*
@@ -135,7 +134,7 @@ type reader struct {
 	columns          [][]byte
 	setColumns       bool
 	setWhere         bool
-	expressions      thrift.TList
+	expressions      []*cassandra.IndexExpression
 }
 
 func newReader(cp *connectionPool, cl int) *reader {
@@ -170,13 +169,13 @@ func (r *reader) Columns(c [][]byte) Reader {
 
 func (r *reader) Where(column []byte, op Operator, value []byte) Reader {
 	if r.expressions == nil {
-		r.expressions = thrift.NewTList(thrift.STRUCT, 1)
+		r.expressions = make([]*cassandra.IndexExpression, 0)
 	}
 	exp := cassandra.NewIndexExpression()
 	exp.ColumnName = column
 	exp.Op = cassandra.IndexOperator(op)
 	exp.Value = value
-	r.expressions.Push(exp)
+	r.expressions = append(r.expressions, exp)
 	r.setWhere = true
 	return r
 }
@@ -208,10 +207,11 @@ func fullSlice() *cassandra.SliceRange {
 func (r *reader) buildPredicate() *cassandra.SlicePredicate {
 	sp := cassandra.NewSlicePredicate()
 	if r.setColumns {
-		sp.ColumnNames = thrift.NewTList(thrift.BINARY, 1)
+		colArr := make([][]byte, 0)
 		for _, col := range r.columns {
-			sp.ColumnNames.Push(col)
+			colArr = append(colArr, col)
 		}
+		sp.ColumnNames = &colArr
 	} else if r.setSlice {
 		sp.SliceRange = sliceToCassandra(&r.slice)
 	} else {
@@ -228,15 +228,17 @@ func (r *reader) buildColumnParent() *cassandra.ColumnParent {
 
 func (q *reader) buildKeyRange(r *Range) *cassandra.KeyRange {
 	kr := cassandra.NewKeyRange()
-	kr.StartKey = r.Start
-	kr.EndKey = r.End
+	kr.StartKey = &r.Start
+	kr.EndKey = &r.End
 	kr.Count = int32(r.Count)
 	// workaround some uninitialized slice == nil quirks that trickle down into the generated thrift4go code
 	if kr.StartKey == nil {
-		kr.StartKey = make([]byte, 0)
+		sKeyArr := make([]byte, 0)
+		kr.StartKey = &sKeyArr
 	}
 	if kr.EndKey == nil {
-		kr.EndKey = make([]byte, 0)
+		eKeyArr := make([]byte, 0)
+		kr.EndKey = &eKeyArr
 	}
 	return kr
 }
@@ -261,15 +263,12 @@ func (r *reader) Get(key []byte) (*Row, error) {
 	cp := r.buildColumnParent()
 	sp := r.buildPredicate()
 
-	var ret thrift.TList
+	var ret []*cassandra.ColumnOrSuperColumn
 	err := r.pool.run(func(c *connection) *transactionError {
-		var ire *cassandra.InvalidRequestException
-		var ue *cassandra.UnavailableException
-		var te *cassandra.TimedOutException
 		var err error
-		ret, ire, ue, te, err = c.client.GetSlice(
+		ret, err = c.client.GetSlice(
 			key, cp, sp, cassandra.ConsistencyLevel(r.consistencyLevel))
-		return &transactionError{ire, ue, te, err}
+		return &transactionError{err}
 	})
 
 	if err != nil {
@@ -289,13 +288,10 @@ func (r *reader) Count(key []byte) (int, error) {
 
 	var ret int32
 	err := r.pool.run(func(c *connection) *transactionError {
-		var ire *cassandra.InvalidRequestException
-		var ue *cassandra.UnavailableException
-		var te *cassandra.TimedOutException
 		var err error
-		ret, ire, ue, te, err = c.client.GetCount(
+		ret, err = c.client.GetCount(
 			key, cp, sp, cassandra.ConsistencyLevel(r.consistencyLevel))
-		return &transactionError{ire, ue, te, err}
+		return &transactionError{err}
 	})
 
 	if err != nil {
@@ -303,14 +299,6 @@ func (r *reader) Count(key []byte) (int, error) {
 	}
 
 	return int(ret), nil
-}
-
-func (r *reader) buildMultiKeys(keys [][]byte) thrift.TList {
-	tkeys := thrift.NewTList(thrift.BINARY, 1)
-	for _, k := range keys {
-		tkeys.Push(k)
-	}
-	return tkeys
 }
 
 func (r *reader) MultiGet(keys [][]byte) ([]*Row, error) {
@@ -324,17 +312,14 @@ func (r *reader) MultiGet(keys [][]byte) ([]*Row, error) {
 
 	cp := r.buildColumnParent()
 	sp := r.buildPredicate()
-	tk := r.buildMultiKeys(keys)
+	tk := keys
 
-	var ret thrift.TMap
+	var ret map[string][]*cassandra.ColumnOrSuperColumn
 	err := r.pool.run(func(c *connection) *transactionError {
-		var ire *cassandra.InvalidRequestException
-		var ue *cassandra.UnavailableException
-		var te *cassandra.TimedOutException
 		var err error
-		ret, ire, ue, te, err = c.client.MultigetSlice(
+		ret, err = c.client.MultigetSlice(
 			tk, cp, sp, cassandra.ConsistencyLevel(r.consistencyLevel))
-		return &transactionError{ire, ue, te, err}
+		return &transactionError{err}
 	})
 
 	if err != nil {
@@ -355,17 +340,14 @@ func (r *reader) MultiCount(keys [][]byte) ([]*RowColumnCount, error) {
 
 	cp := r.buildColumnParent()
 	sp := r.buildPredicate()
-	tk := r.buildMultiKeys(keys)
+	tk := keys
 
-	var ret thrift.TMap
+	var ret map[string]int32
 	err := r.pool.run(func(c *connection) *transactionError {
-		var ire *cassandra.InvalidRequestException
-		var ue *cassandra.UnavailableException
-		var te *cassandra.TimedOutException
 		var err error
-		ret, ire, ue, te, err = c.client.MultigetCount(
+		ret, err = c.client.MultigetCount(
 			tk, cp, sp, cassandra.ConsistencyLevel(r.consistencyLevel))
-		return &transactionError{ire, ue, te, err}
+		return &transactionError{err}
 	})
 
 	if err != nil {
@@ -388,15 +370,12 @@ func (r *reader) RangeGet(rang *Range) ([]*Row, error) {
 	cp := r.buildColumnParent()
 	sp := r.buildPredicate()
 
-	var ret thrift.TList
+	var ret []*cassandra.KeySlice
 	err := r.pool.run(func(c *connection) *transactionError {
-		var ire *cassandra.InvalidRequestException
-		var ue *cassandra.UnavailableException
-		var te *cassandra.TimedOutException
 		var err error
-		ret, ire, ue, te, err = c.client.GetRangeSlices(
+		ret, err = c.client.GetRangeSlices(
 			cp, sp, kr, cassandra.ConsistencyLevel(r.consistencyLevel))
-		return &transactionError{ire, ue, te, err}
+		return &transactionError{err}
 	})
 
 	if err != nil {
@@ -423,15 +402,12 @@ func (r *reader) IndexedGet(rang *IndexedRange) ([]*Row, error) {
 	cp := r.buildColumnParent()
 	sp := r.buildPredicate()
 
-	var ret thrift.TList
+	var ret []*cassandra.KeySlice
 	err := r.pool.run(func(c *connection) *transactionError {
-		var ire *cassandra.InvalidRequestException
-		var ue *cassandra.UnavailableException
-		var te *cassandra.TimedOutException
 		var err error
-		ret, ire, ue, te, err = c.client.GetIndexedSlices(
+		ret, err = c.client.GetIndexedSlices(
 			cp, ic, sp, cassandra.ConsistencyLevel(r.consistencyLevel))
-		return &transactionError{ire, ue, te, err}
+		return &transactionError{err}
 	})
 
 	if err != nil {
@@ -441,19 +417,18 @@ func (r *reader) IndexedGet(rang *IndexedRange) ([]*Row, error) {
 	return rowsFromTListKeySlice(ret), nil
 }
 
-func rowFromTListColumns(key []byte, tl thrift.TList) *Row {
-	if tl == nil || tl.Len() <= 0 {
+func rowFromTListColumns(key []byte, tl []*cassandra.ColumnOrSuperColumn) *Row {
+	if len(tl) <= 0 {
 		return nil
 	}
 	r := &Row{Key: key}
-	for colI := range tl.Iter() {
-		var col *cassandra.ColumnOrSuperColumn = colI.(*cassandra.ColumnOrSuperColumn)
+	for _, col := range tl {
 		if col.Column != nil {
 			c := &Column{
 				Name:      col.Column.Name,
-				Value:     col.Column.Value,
-				Timestamp: col.Column.Timestamp,
-				Ttl:       col.Column.Ttl,
+				Value:     *col.Column.Value,
+				Timestamp: *col.Column.Timestamp,
+				Ttl:       *col.Column.Ttl,
 			}
 			r.Columns = append(r.Columns, c)
 		} else if col.CounterColumn != nil {
@@ -468,29 +443,14 @@ func rowFromTListColumns(key []byte, tl thrift.TList) *Row {
 	return r
 }
 
-func keyFromTMap(e thrift.TMapElem) []byte {
-	// workaround some issues with the way the key->row array gets built by thrift4go and
-	// the cassandra IDL wrongly insisting keys are strings
-	rawKey := e.Key()
-	var key []byte
-	switch k := rawKey.(type) {
-	case []uint8:
-		key = []byte(k)
-	case string:
-		key = []byte(k)
-	}
-	return key
-}
-
-func rowsFromTMap(tm thrift.TMap) []*Row {
-	if tm == nil || tm.Len() <= 0 {
+func rowsFromTMap(tm map[string][]*cassandra.ColumnOrSuperColumn) []*Row {
+	if len(tm) <= 0 {
 		return make([]*Row, 0)
 	}
 	r := make([]*Row, 0)
-	for rowI := range tm.Iter() {
-		key := keyFromTMap(rowI)
-		columns := (rowI.Value()).(thrift.TList)
-		row := rowFromTListColumns(key, columns)
+	for key, v := range tm {
+		columns := v
+		row := rowFromTListColumns([]byte(key), columns)
 		if row != nil {
 			r = append(r, row)
 		}
@@ -498,28 +458,25 @@ func rowsFromTMap(tm thrift.TMap) []*Row {
 	return r
 }
 
-func rowsColumnCountFromTMap(tm thrift.TMap) []*RowColumnCount {
-	if tm == nil || tm.Len() <= 0 {
+func rowsColumnCountFromTMap(tm map[string]int32) []*RowColumnCount {
+	if len(tm) <= 0 {
 		return make([]*RowColumnCount, 0)
 	}
 	r := make([]*RowColumnCount, 0)
-	for rowI := range tm.Iter() {
-		key := keyFromTMap(rowI)
-		count := int((rowI.Value()).(int32))
+	for key, count := range tm {
 		if count > 0 {
-			r = append(r, &RowColumnCount{Key: key, Count: count})
+			r = append(r, &RowColumnCount{Key: []byte(key), Count: int(count)})
 		}
 	}
 	return r
 }
 
-func rowsFromTListKeySlice(tl thrift.TList) []*Row {
-	if tl == nil || tl.Len() <= 0 {
+func rowsFromTListKeySlice(tl []*cassandra.KeySlice) []*Row {
+	if len(tl) <= 0 {
 		return make([]*Row, 0)
 	}
 	r := make([]*Row, 0)
-	for keySliceI := range tl.Iter() {
-		keySlice := keySliceI.(*cassandra.KeySlice)
+	for _, keySlice := range tl {
 		key := keySlice.Key
 		row := rowFromTListColumns(key, keySlice.Columns)
 		if row != nil {

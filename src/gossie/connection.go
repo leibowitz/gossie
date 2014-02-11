@@ -3,8 +3,8 @@ package gossie
 import (
 	"errors"
 	"fmt"
+	"github.com/apache/thrift/lib/go/thrift"
 	"github.com/hailocab/gossie/src/cassandra"
-	"github.com/hailocab/thrift4go/lib/go/src/thrift"
 	"math/rand"
 	"net"
 	"strconv"
@@ -175,14 +175,9 @@ func NewConnectionPool(nodes []string, keyspace string, options PoolOptions) (Co
 
 	var ksDef *cassandra.KsDef
 	err := cp.run(func(c *connection) *transactionError {
-		var ire *cassandra.InvalidRequestException
-		var nfe *cassandra.NotFoundException
 		var err error
-		ksDef, nfe, ire, err = c.client.DescribeKeyspace(cp.keyspace)
-		if nfe != nil {
-			ksDef = nil
-		}
-		return &transactionError{ire: ire, err: err}
+		ksDef, err = c.client.DescribeKeyspace(cp.keyspace)
+		return &transactionError{err}
 	})
 
 	if err != nil {
@@ -202,22 +197,10 @@ func NewConnectionPool(nodes []string, keyspace string, options PoolOptions) (Co
 }
 
 type transactionError struct {
-	ire *cassandra.InvalidRequestException
-	ue  *cassandra.UnavailableException
-	te  *cassandra.TimedOutException
 	err error
 }
 
 func (e transactionError) Error() string {
-	if e.ire != nil {
-		return e.ire.Why
-	}
-	if e.ue != nil {
-		return "Consistency level couldn't be reached"
-	}
-	if e.te != nil {
-		return "Thrift RPC timeout was exceeded"
-	}
 	return e.err.Error()
 }
 
@@ -250,25 +233,26 @@ func (cp *connectionPool) runWithRetries(t transaction, retries int) error {
 			cp.releaseEmpty()
 			return terr
 		}
-		// nonrecoverable error, but not related to availability, do not retry and pass it to the user
-		if terr.ire != nil {
-			cp.release(c)
-			return terr
-		}
-		// the node is timing out. This Is Bad. move it to the blacklist and try again with another connection
-		if terr.te != nil {
-			cp.blacklist(c.node)
-			c.close()
-			c = nil
-			continue
-		}
-		// one or more replicas are unavailable for the operation at the required consistency level. this is potentially
-		// recoverable in a partitioned cluster by hoping to another connection/node and trying again
-		if terr.ue != nil {
-			cp.release(c)
-			c = nil
-			continue
-		}
+		// @todo Catch TimedOutException etc
+		//// nonrecoverable error, but not related to availability, do not retry and pass it to the user
+		//if terr.ire != nil {
+		//	cp.release(c)
+		//	return terr
+		//}
+		//// the node is timing out. This Is Bad. move it to the blacklist and try again with another connection
+		//if terr.te != nil {
+		//	cp.blacklist(c.node)
+		//	c.close()
+		//	c = nil
+		//	continue
+		//}
+		//// one or more replicas are unavailable for the operation at the required consistency level. this is potentially
+		//// recoverable in a partitioned cluster by hoping to another connection/node and trying again
+		//if terr.ue != nil {
+		//	cp.release(c)
+		//	c = nil
+		//	continue
+		//}
 		// no errors, release connection and return
 		cp.release(c)
 		return nil
@@ -401,7 +385,7 @@ func (cp *connectionPool) Close() error {
 }
 
 type connection struct {
-	socket    *thrift.TNonblockingSocket
+	socket    *thrift.TSocket
 	transport *thrift.TFramedTransport
 	client    *cassandra.CassandraClient
 	node      string
@@ -417,13 +401,11 @@ func newConnection(node, keyspace string, timeout int, authentication map[string
 
 	c := &connection{node: node}
 
-	c.socket, err = thrift.NewTNonblockingSocketAddr(addr)
-	if err != nil {
-		return nil, err
-	}
+	// @todo fix timeout
+	c.socket = thrift.NewTSocketFromAddrTimeout(addr, 0)
 
 	// socket not open yet, so no error expected. it expects nanos, we have milis, so it's 1e6
-	c.socket.SetTimeout(int64(timeout) * 1e6)
+	c.socket.SetTimeout(time.Duration(timeout) * time.Millisecond)
 
 	c.transport = thrift.NewTFramedTransport(c.socket)
 	protocolFactory := thrift.NewTBinaryProtocolFactoryDefault()
@@ -468,31 +450,33 @@ func newConnection(node, keyspace string, timeout int, authentication map[string
 
 	if len(authentication) > 0 {
 		ar := cassandra.NewAuthenticationRequest()
-		ar.Credentials = thrift.NewTMap(thrift.STRING, thrift.STRING, 1)
+		ar.Credentials = make(map[string]string)
 		for k, v := range authentication {
-			ar.Credentials.Set(k, v)
+			ar.Credentials[k] = v
 		}
-		autE, auzE, err := c.client.Login(ar)
-		if autE != nil {
-			return nil, ErrorAuthenticationFailed
-		}
-		if auzE != nil {
-			return nil, ErrorAuthorizationFailed
-		}
+		err := c.client.Login(ar)
+		// @todo handle errors
+		//if autE != nil {
+		//	return nil, ErrorAuthenticationFailed
+		//}
+		//if auzE != nil {
+		//	return nil, ErrorAuthorizationFailed
+		//}
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	ire, err := c.client.SetKeyspace(keyspace)
+	err = c.client.SetKeyspace(keyspace)
 	if err != nil {
 		c.close()
 		return nil, err
 	}
-	if ire != nil {
-		c.close()
-		return nil, ErrorSetKeyspace
-	}
+	// @todo handle errors
+	//if ire != nil {
+	//	c.close()
+	//	return nil, ErrorSetKeyspace
+	//}
 
 	c.keyspace = keyspace
 
