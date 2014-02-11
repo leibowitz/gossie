@@ -12761,6 +12761,10 @@ func (p *BatchMutateArgs) ReadFieldConsistencyLevel(iprot thrift.TProtocol) thri
 }
 
 func (p *BatchMutateArgs) Write(oprot thrift.TProtocol) (err thrift.TProtocolException) {
+	if p.Len() == 0 {
+		return thrift.NewTProtocolExceptionWriteStruct(p.ThriftName(), thrift.NewTProtocolException(thrift.INVALID_DATA, "Empty batch"))
+	}
+
 	err = oprot.WriteStructBegin("batch_mutate_args")
 	if err != nil {
 		return thrift.NewTProtocolExceptionWriteStruct(p.ThriftName(), err)
