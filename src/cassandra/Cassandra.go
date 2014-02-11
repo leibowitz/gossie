@@ -1330,6 +1330,11 @@ func (p *CassandraClient) BatchMutate(mutation_map thrift.TMap, consistency_leve
 }
 
 func (p *CassandraClient) SendBatchMutate(mutation_map thrift.TMap, consistency_level ConsistencyLevel) (err error) {
+	if mutation_map.Len() == 0 {
+		err = fmt.Errorf("Empty mutation for batch")
+		return
+	}
+
 	oprot := p.OutputProtocol
 	if oprot != nil {
 		oprot = p.ProtocolFactory.GetProtocol(p.Transport)
