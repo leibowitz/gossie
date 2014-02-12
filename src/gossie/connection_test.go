@@ -2,7 +2,7 @@ package gossie
 
 import (
 	"errors"
-	"github.com/hailocab/gossie/src/cassandra"
+	_ "github.com/hailocab/gossie/src/cassandra"
 	"testing"
 	"time"
 )
@@ -165,16 +165,7 @@ func TestRun(t *testing.T) {
 			gotConnection = c.client != nil
 			terr := &transactionError{}
 
-			if _ire {
-				terr.ire = &cassandra.InvalidRequestException{}
-			}
-			if _ue {
-				terr.ue = &cassandra.UnavailableException{}
-			}
-			if _te {
-				terr.te = &cassandra.TimedOutException{}
-			}
-			if _err {
+			if _ire || _ue || _te || _err {
 				terr.err = errors.New("uh")
 			}
 			return terr

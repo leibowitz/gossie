@@ -73,7 +73,7 @@ func (w *writer) addWriter(cf string, key []byte) *cassandra.Mutation {
 	} else {
 		mutList = cfm
 	}
-	mutList = append(mutList, tm)
+	cfMuts[cf] = append(mutList, tm)
 	return tm
 }
 
@@ -97,7 +97,9 @@ func (w *writer) InsertTtl(cf string, row *Row, ttl int) Writer {
 			ttlTmp := int32(ttl)
 			c.Ttl = &ttlTmp
 		} else {
-			c.Ttl = &col.Ttl
+			if col.Ttl > 0 {
+				c.Ttl = &col.Ttl
+			}
 		}
 		if col.Timestamp > 0 {
 			c.Timestamp = &col.Timestamp
