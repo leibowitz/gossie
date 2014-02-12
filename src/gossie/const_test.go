@@ -2,9 +2,9 @@ package gossie
 
 var (
 	invalidEndpoint    = "localhost:9999"
-	localEndpoint      = "localhost:9160"
+	localEndpoint      = "localhost:19160"
 	localEndpointPool  = []string{localEndpoint}
-	localEndpointsPool = []string{localEndpoint, "localhost:9170", "localhost:9180"}
+	localEndpointsPool = []string{localEndpoint}
 
 	keyspace = "TestGossie"
 

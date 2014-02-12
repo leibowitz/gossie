@@ -57,21 +57,15 @@ func now() int64 {
 
 func (w *writer) addWriter(cf string, key []byte) *cassandra.Mutation {
 	tm := cassandra.NewMutation()
-	var cfMuts map[string][]*cassandra.Mutation
-	im, exists := w.writers[string(key)]
+	cfMuts, exists := w.writers[string(key)]
 	if !exists {
 		cfMuts = make(map[string][]*cassandra.Mutation)
 		w.writers[string(key)] = cfMuts
-	} else {
-		cfMuts = im
 	}
-	var mutList []*cassandra.Mutation
-	cfm, exists := cfMuts[cf]
+	mutList, exists := cfMuts[cf]
 	if !exists {
 		mutList = make([]*cassandra.Mutation, 0)
 		cfMuts[cf] = mutList
-	} else {
-		mutList = cfm
 	}
 	cfMuts[cf] = append(mutList, tm)
 	return tm
