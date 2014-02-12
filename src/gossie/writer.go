@@ -60,7 +60,8 @@ func (w *writer) addWriter(cf string, key []byte) *cassandra.Mutation {
 	var cfMuts map[string][]*cassandra.Mutation
 	im, exists := w.writers[string(key)]
 	if !exists {
-		w.writers[string(key)] = make(map[string][]*cassandra.Mutation)
+		cfMuts = make(map[string][]*cassandra.Mutation)
+		w.writers[string(key)] = cfMuts
 	} else {
 		cfMuts = im
 	}
