@@ -228,8 +228,12 @@ func (r *reader) buildColumnParent() *cassandra.ColumnParent {
 
 func (q *reader) buildKeyRange(r *Range) *cassandra.KeyRange {
 	kr := cassandra.NewKeyRange()
-	kr.StartKey = &r.Start
-	kr.EndKey = &r.End
+	if r.Start != nil {
+		kr.StartKey = &r.Start
+	}
+	if r.End != nil {
+		kr.EndKey = &r.End
+	}
 	kr.Count = int32(r.Count)
 	// workaround some uninitialized slice == nil quirks that trickle down into the generated thrift4go code
 	if kr.StartKey == nil {
@@ -424,11 +428,15 @@ func rowFromTListColumns(key []byte, tl []*cassandra.ColumnOrSuperColumn) *Row {
 	r := &Row{Key: key}
 	for _, col := range tl {
 		if col.Column != nil {
-			c := &Column{
-				Name:      col.Column.Name,
-				Value:     *col.Column.Value,
-				Timestamp: *col.Column.Timestamp,
-				Ttl:       *col.Column.Ttl,
+			c := &Column{Name: col.Column.Name}
+			if col.Column.IsSetValue() {
+				c.Value = *col.Column.Value
+			}
+			if col.Column.IsSetTimestamp() {
+				c.Timestamp = *col.Column.Timestamp
+			}
+			if col.Column.IsSetTtl() {
+				c.Ttl = *col.Column.Ttl
 			}
 			r.Columns = append(r.Columns, c)
 		} else if col.CounterColumn != nil {
