@@ -225,34 +225,33 @@ func (cp *connectionPool) runWithRetries(t transaction, retries int) error {
 		}
 
 		terr := t(c)
-
-		// This error bubble from thrift (in some cases), we are doing this to specifically catch *thrift.tTransportException.
 		if terr.err != nil {
-			c.close()
-			c = nil
-			cp.releaseEmpty()
-			return terr
+			switch terr.err.(type) {
+			case *cassandra.InvalidRequestException:
+				// nonrecoverable error, but not related to availability, do not retry and pass it to the user
+				cp.release(c)
+				return terr
+			case *cassandra.TimedOutException:
+				// the node is timing out. This Is Bad. move it to the blacklist and try again with another connection
+				cp.blacklist(c.node)
+				c.close()
+				c = nil
+				continue
+			case *cassandra.UnavailableException:
+				// one or more replicas are unavailable for the operation at the required consistency level. this is potentially
+				// recoverable in a partitioned cluster by hoping to another connection/node and trying again
+				cp.release(c)
+				c = nil
+				continue
+			default:
+				// This error bubble from thrift (in some cases), we are doing this to specifically catch *thrift.tTransportException.
+				c.close()
+				c = nil
+				cp.releaseEmpty()
+				return terr
+			}
 		}
-		// @todo Catch TimedOutException etc
-		//// nonrecoverable error, but not related to availability, do not retry and pass it to the user
-		//if terr.ire != nil {
-		//	cp.release(c)
-		//	return terr
-		//}
-		//// the node is timing out. This Is Bad. move it to the blacklist and try again with another connection
-		//if terr.te != nil {
-		//	cp.blacklist(c.node)
-		//	c.close()
-		//	c = nil
-		//	continue
-		//}
-		//// one or more replicas are unavailable for the operation at the required consistency level. this is potentially
-		//// recoverable in a partitioned cluster by hoping to another connection/node and trying again
-		//if terr.ue != nil {
-		//	cp.release(c)
-		//	c = nil
-		//	continue
-		//}
+
 		// no errors, release connection and return
 		cp.release(c)
 		return nil
@@ -401,10 +400,9 @@ func newConnection(node, keyspace string, timeout int, authentication map[string
 
 	c := &connection{node: node}
 
-	// @todo fix timeout
 	c.socket = thrift.NewTSocketFromAddrTimeout(addr, 0)
 
-	// socket not open yet, so no error expected. it expects nanos, we have milis, so it's 1e6
+	// socket not open yet, so no error expected.
 	c.socket.SetTimeout(time.Duration(timeout) * time.Millisecond)
 
 	c.transport = thrift.NewTFramedTransport(c.socket)
@@ -455,29 +453,29 @@ func newConnection(node, keyspace string, timeout int, authentication map[string
 			ar.Credentials[k] = v
 		}
 		err := c.client.Login(ar)
-		// @todo handle errors
-		//if autE != nil {
-		//	return nil, ErrorAuthenticationFailed
-		//}
-		//if auzE != nil {
-		//	return nil, ErrorAuthorizationFailed
-		//}
 		if err != nil {
-			return nil, err
+			switch err.(type) {
+			case *cassandra.AuthenticationException:
+				return nil, ErrorAuthenticationFailed
+			case *cassandra.AuthorizationException:
+				return nil, ErrorAuthorizationFailed
+			default:
+				return nil, err
+			}
 		}
 	}
 
 	err = c.client.SetKeyspace(keyspace)
 	if err != nil {
-		c.close()
-		return nil, err
+		switch err.(type) {
+		case *cassandra.InvalidRequestException:
+			c.close()
+			return nil, ErrorSetKeyspace
+		default:
+			c.close()
+			return nil, err
+		}
 	}
-	// @todo handle errors
-	//if ire != nil {
-	//	c.close()
-	//	return nil, ErrorSetKeyspace
-	//}
-
 	c.keyspace = keyspace
 
 	return c, nil
